@@ -1,35 +1,47 @@
 <p align="center">
-  <img src="./happy_solution.png" alt="Description of the image">
+  <img src="./woman_thinking.png" alt="Description of the image">
 </p>
 <p align="center">
   AI image created on MidJourney V6.1 by the author.
 </p><br>
 <br>
 
-# AutoStationarity 📈 <br>
+# Feature Reduction for Time Series ✂️  <br>
 
 
-## Want to Decrease Your Model’s Prediction Errors by 20%? Follow This Simple Trick
+## Is Less More? Do Deep Learning Forecasting Models Need Feature Reduction?
 
-Time series modeling can be tricky, even for experienced data scientists. 
-You’ve done everything by the book: used state-of-the-art deep learning models, 
-performed feature engineering, normalized your data, and optimized 
-hyperparameters. Yet, your model’s performance still falls short. If this is 
-your case, this code may help you.
+Time series forecasting is a powerful tool in data science, offering insights 
+into future trends based on historical patterns. In our [previous article](https://levelup.gitconnected.com/want-to-decrease-your-models-prediction-errors-by-20-follow-this-simple-trick-97354102098e), we 
+explored how making your time series stationary automatically can significantly 
+enhance model performance. But stationarity is just one piece of the puzzle. As 
+we continue to refine our forecasting models, another crucial question arises: 
+how do we handle the multitude of features our data may present?
 
-Learn why making your time series stationary improves your model accuracy. Also, 
-discover how to automatically apply this technique in your machine learning 
-pipeline using a simple Python script.
+Learn why feature reduction is important and how to implement feature reduction 
+in time series
 <br>
 <br>
 ## Usage
 
-It is recommended to read [this article](https://levelup.gitconnected.com/want-to-decrease-your-models-prediction-errors-by-20-follow-this-simple-trick-97354102098e) 
-for a good understanding of how to use the code and make your data stationary 
-automatically.
+It is recommended to read [this article](hhttps://towardsdatascience.com/is-less-more-do-deep-learning-forecasting-models-need-feature-reduction-25d8968ac15c) 
+for a good understanding of how to use the code and implement feature reduction 
+in your time series pipeline.
 
-1. Run `pip install -r requirements.txt` to install the requirements
-2. Execute the code with `python -m trainer`
+1. You will need to get your data using [this repo](https://github.com/philippe-ostiguy/free-fin-data)
+2. Create a `data` directory in your current directory:
+
+ ```bash
+ mkdir -p /path/to/current_directory/data
+ ```
+3. Copy the data in your current directory
+ ```bash
+cp -R /path/to/fetcher_directory /path/to/current_directory/data
+```
+4. Run `pip install -r requirements.txt` to install the requirements
+5. Execute the code with `python -m trainer`
+
+This is it!
 <br>
 
 ## Liked this repo? Show your support!

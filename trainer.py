@@ -1,216 +1,138 @@
-import requests
 import pandas as pd
-from dotenv import load_dotenv
-import os
-load_dotenv()
-API_KEY = os.getenv("API_KEY")
-FRED_LIST= 'fred_daily_series_list.csv'
+import warnings
+warnings.filterwarnings("ignore")
 
-def get_daily_series(api_key):
-    base_url = "https://api.stlouisfed.org/fred/tags/series"
-    params = {
-        "api_key": api_key,
-        "tag_names": "daily",
-        "file_type": "json",
-        "limit": 1000,
-        "offset": 0
-    }
+def is_sp500(df):
+    last_date = df['ds'].max()
+    last_value = float(df.loc[df['ds'] == last_date, 'value'].iloc[0])
+    return 5400 <= last_value <= 5650
 
-    all_series = []
+initial_model_train = None
+for i, df in enumerate(processed_dataframes):
+    if df['value'].isna().any():
+        continue
+    if is_sp500(df):
+        initial_model_train = df
+        break
 
-    while True:
-        try:
-            response = requests.get(base_url, params=params)
-            response.raise_for_status()
-            data = response.json()
-
-            if "seriess" in data:
-                series_chunk = data["seriess"]
-                all_series.extend(series_chunk)
-
-                if len(series_chunk) < params["limit"]:
-                    break
-                params["offset"] += params["limit"]
-            else:
-                break
-        except requests.exceptions.RequestException as e:
-            print(f"Error fetching data: {e}")
-            break
-    return all_series
-
-
-
-daily_series = get_daily_series(API_KEY)
-df = pd.DataFrame(daily_series)
-df = df[['id']]
-df.to_csv(FRED_LIST, index=False)
-
-import os
-from io import StringIO
-
-START_DATE = '2014-10-01'
+TRAIN_SIZE = .90
+START_DATE = '2018-10-01'
 END_DATE = '2024-09-05'
-DATA_FOLDER = 'data'
+initial_model_train = initial_model_train.rename(columns={'value': 'price'}).reset_index(drop=True)
+initial_model_train['unique_id'] = 'SPY'
+initial_model_train['price'] = initial_model_train['price'].astype(float)
+initial_model_train['y'] = initial_model_train['price'].pct_change()
 
-def fetch_data(series_id):
-    request = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-    request += f"&cosd={START_DATE}"
-    request += f"&coed={END_DATE}"
-    try:
-        response = requests.get(request)
-        response.raise_for_status()
-        df = pd.read_csv(StringIO(response.text), parse_dates=True)
-        df.rename(
-            columns={
-                df.columns[0]: 'ds',
-                df.columns[1]: 'value',
-            },
-            inplace=True,
-        )
-        return series_id, df
-    except requests.RequestException as e:
-        print(f"Error fetching data for {series_id}: {e}")
-        return series_id, None
+initial_model_train = initial_model_train[initial_model_train['ds'] > START_DATE].reset_index(drop=True)
+combined_df_all = pd.concat([df.drop(columns=['ds']) for df in processed_dataframes], axis=1)
+combined_df_all.columns = [f'value_{i}' for i in range(len(processed_dataframes))]
+rows_to_keep = len(initial_model_train)
+combined_df_all = combined_df_all.iloc[-rows_to_keep:].reset_index(drop=True)
 
-df = pd.read_csv(FRED_LIST)
-os.makedirs(DATA_FOLDER, exist_ok=True)
-series_ids = df['id'].tolist()
-
-for series_id in series_ids:
-    series_id, data = fetch_data(series_id)
-    if data is not None:
-        filename = os.path.join(DATA_FOLDER, f"{series_id}.csv")
-        data.to_csv(filename, index=False)
+train_size = int(len(initial_model_train)*TRAIN_SIZE)
+initial_model_test = initial_model_train[train_size:]
+initial_model_train = initial_model_train[:train_size]
+combined_df_test = combined_df_all[train_size:]
+combined_df_train = combined_df_all[:train_size]
 
 
-def count_csv_files(folder_path):
-    csv_count = 0
-    for filename in os.listdir(folder_path):
-        if filename.endswith('.csv'):
-            csv_count += 1
-    return csv_count
+import numpy as np
+from statsmodels.tsa.stattools import adfuller
+P_VALUE = 0.05
 
-num_csv_files = count_csv_files(DATA_FOLDER)
+def replace_inf_nan(series):
+    if np.isnan(series.iloc[0]) or np.isinf(series.iloc[0]):
+        series.iloc[0] = 0
+    mask = np.isinf(series) | np.isnan(series)
+    series = series.copy()
+    series[mask] = np.nan
+    series = series.ffill()
+    return series
 
+def safe_convert_to_numeric(series):
+    return pd.to_numeric(series, errors='coerce')
 
-import pandas_market_calendars as mcal
-from typing import Optional
+tempo_df = pd.DataFrame()
+stationary_df_train = pd.DataFrame()
+stationary_df_test = pd.DataFrame()
 
+value_columns = [col for col in combined_df_all.columns if col.startswith('value_')]
 
-def obtain_market_dates(start_date: str, end_date: str, market : Optional[str] = "NYSE") -> pd.DataFrame:
-    nyse = mcal.get_calendar(market)
-    market_open_dates = nyse.schedule(
-        start_date=start_date,
-        end_date=end_date,
-    )
-    return market_open_dates
+transformations = ['first_diff', 'pct_change', 'log', 'identity']
 
+def get_first_diff(numeric_series):
+    return replace_inf_nan(numeric_series.diff())
 
-market_dates = obtain_market_dates(START_DATE,END_DATE)
+def get_pct_change(numeric_series):
+    return replace_inf_nan(numeric_series.pct_change())
 
-def replace_empty_data(df : pd.DataFrame) -> pd.DataFrame:
-    mask = df.isin(["", ".", None])
-    rows_to_remove = mask.any(axis=1)
-    return df.loc[~rows_to_remove]
+def get_log_transform(numeric_series):
+    return replace_inf_nan(np.log(numeric_series.replace(0, np.nan)))
 
+def get_identity(numeric_series):
+    return numeric_series
 
-from typing import Union, Tuple
-import logging
-MAX_MISSING_DATA = 0.02
+for index, val_col in enumerate(value_columns):
+    numeric_series = safe_convert_to_numeric(combined_df_train[val_col])
+    numeric_series_all = safe_convert_to_numeric(combined_df_all[val_col])
 
-def handle_missing_data(
-        data: pd.DataFrame,
-        market_open_dates : pd.DataFrame,
-        data_series : str
-) -> Tuple[Union[None,pd.DataFrame], Union[pd.DataFrame, None]]:
-    modified_data = data.copy()
-    market_open_dates["count"] = 0
-    date_counts = data['ds'].value_counts()
+    if numeric_series.isna().all():
+        continue
 
-    market_open_dates["count"] = market_open_dates.index.map(
-        date_counts
-    ).fillna(0)
+    valid_transformations = []
 
-    missing_dates = market_open_dates.loc[
-        market_open_dates["count"] < 1
-    ]
+    tempo_df['first_diff'] = get_first_diff(numeric_series)
+    tempo_df['pct_change'] = get_pct_change(numeric_series)
+    tempo_df['log'] = get_log_transform(numeric_series)
+    tempo_df['identity'] = get_identity(numeric_series)
 
-    if not missing_dates.empty:
-        max_count = (
-            len(market_open_dates)
-            * MAX_MISSING_DATA
-        )
+    for transfo in transformations:
+        tempo_df[transfo] = replace_inf_nan(tempo_df[transfo])
+        series = tempo_df[transfo].dropna()
 
-        if len(missing_dates) > max_count:
-            logging.warning(
-                f"For the asset {data_series} there are "
-                f"{len(missing_dates)} data points missing, which is greater than the maximum threshold of "
-                f"{MAX_MISSING_DATA * 100}%"
-            )
-            return pd.DataFrame(), None
+        if len(series) > 1 and not (series == series.iloc[0]).all():
+            result = adfuller(series)
+            if result[1] < P_VALUE:
+                valid_transformations.append((transfo, result[0], result[1]))
+
+    if valid_transformations:
+        if any(transfo == 'identity' for transfo, _, _ in valid_transformations):
+            chosen_transfo = 'identity'
         else:
-            for date, row in missing_dates.iterrows():
-                modified_data = insert_missing_date(
-                    modified_data, date, 'ds'
-                )
-    return modified_data, missing_dates
+            chosen_transfo = min(valid_transformations, key=lambda x: x[1])[0]
+
+        if chosen_transfo == 'first_diff':
+            stationary_df_train[val_col] = get_first_diff(numeric_series_all)
+        elif chosen_transfo == 'pct_change':
+            stationary_df_train[val_col] = get_pct_change(numeric_series_all)
+        elif chosen_transfo == 'log':
+            stationary_df_train[val_col] = get_log_transform(numeric_series_all)
+        else:
+            stationary_df_train[val_col] = get_identity(numeric_series_all)
+
+    else:
+        print(f"No valid transformation found for {val_col}")
 
 
-def insert_missing_date(
-        data: pd.DataFrame,
-        date: str,
-        date_column: str
-) -> pd.DataFrame:
-    date = pd.to_datetime(date)
-    if date not in data[date_column].values:
-        prev_date = (
-            data[data[date_column] < date].iloc[-1]
-            if not data[data[date_column] < date].empty
-            else data.iloc[0]
-        )
-        new_row = prev_date.copy()
-        new_row[date_column] = date
-        data = (
-            pd.concat([data, new_row.to_frame().T], ignore_index=True)
-            .sort_values(by=date_column)
-            .reset_index(drop=True)
-        )
-    return data
+stationary_df_test = stationary_df_train[train_size:]
+stationary_df_train = stationary_df_train[:train_size]
 
+initial_model_train = initial_model_train.iloc[1:].reset_index(drop=True)
+stationary_df_train = stationary_df_train.iloc[1:].reset_index(drop=True)
+last_train_index = stationary_df_train.index[-1]
+stationary_df_test = stationary_df_test.loc[last_train_index + 1:].reset_index(drop=True)
+initial_model_test = initial_model_test.loc[last_train_index + 1:].reset_index(drop=True)
 
-import glob
-processed_dataframes = []
-market_dates_only = market_dates.index.date
+CORR_COFF = .95
+corr_matrix = stationary_df_train.corr().abs()
+mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
+high_corr = corr_matrix.where(mask).stack()
+high_corr = high_corr[high_corr >= CORR_COFF]
+unique_cols = set(high_corr.index.get_level_values(0)) | set(high_corr.index.get_level_values(1))
+num_high_corr_cols = len(unique_cols)
 
-for csv_file in glob.glob(os.path.join(DATA_FOLDER, "*.csv")):
-
-    df = pd.read_csv(csv_file)
-    df['ds'] = pd.to_datetime(df['ds'])
-    df_correct_dates = df[df['ds'].dt.date.isin(market_dates_only)]
-    df_cleaned = replace_empty_data(df_correct_dates)
-    processed_df, missing_dates = handle_missing_data(df_cleaned,market_dates,os.path.basename(csv_file).split('.')[0])
-    if not processed_df.empty:
-        processed_df['ds'] = pd.to_datetime(processed_df['ds'])
-        if not missing_dates.empty:
-            for missing_date in missing_dates.index:
-                missing_date = pd.to_datetime(missing_date)
-                if missing_date in processed_df['ds'].values:
-                    continue
-
-                previous_day_data = processed_df[processed_df['ds'] < missing_date].tail(1)
-
-                if previous_day_data.empty:
-                    new_row = pd.DataFrame({'ds': [missing_date], 'value': [0]})
-                else:
-                    new_row = previous_day_data.copy()
-                    new_row['ds'] = missing_date
-
-                processed_df = pd.concat([processed_df, new_row]).sort_values('ds').reset_index(drop=True)
-        if 'SP500.csv' in csv_file:
-            model_data = processed_df.rename(columns={'value': 'price'}).reset_index(drop=True)
-        processed_dataframes.append(processed_df.reset_index(drop=True))
-
-print(f"\nNumber of data series remaining after cleanup: {len(processed_dataframes)}\n")
+print(f"\n{num_high_corr_cols}/{stationary_df_train.shape[1]} variables have ≥{int(CORR_COFF*100)}% "
+      f"correlation with another variable.\n")
 
 
 from sklearn.preprocessing import StandardScaler
@@ -218,62 +140,172 @@ from sklearn.decomposition import PCA
 EXPLAINED_VARIANCE = .9
 MIN_VARIANCE = 1e-10
 
-combined_df = pd.concat([df.set_index('ds') for df in processed_dataframes], axis=1)
-combined_df.columns = [f'value_{i}' for i in range(len(processed_dataframes))]
-
-X = combined_df.values
+X_train = stationary_df_train.values
 scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
-
-
+X_train_scaled = scaler.fit_transform(X_train)
 pca = PCA(n_components=EXPLAINED_VARIANCE, svd_solver='full')
-X_pca = pca.fit_transform(X_scaled)
+X_train_pca = pca.fit_transform(X_train_scaled)
 
-X_pca = X_pca[:, pca.explained_variance_ > MIN_VARIANCE]
+components_to_keep = pca.explained_variance_ > MIN_VARIANCE
+X_train_pca = X_train_pca[:, components_to_keep]
 
-
-pca_df = pd.DataFrame(
-    X_pca,
-    columns=[f'PC{i+1}' for i in range(X_pca.shape[1])]
+pca_df_train = pd.DataFrame(
+    X_train_pca,
+    columns=[f'PC{i+1}' for i in range(X_train_pca.shape[1])]
 )
 
-print(f"\nOriginal number of features: {combined_df.shape[1]}")
-print(f"Number of components after PCA: {pca_df.shape[1]}\n")
+X_test = stationary_df_test.values
+X_test_scaled = scaler.transform(X_test)
+X_test_pca = pca.transform(X_test_scaled)
 
-model_data = model_data.join(pca_df)
+X_test_pca = X_test_pca[:, components_to_keep]
+
+pca_df_test = pd.DataFrame(
+    X_test_pca,
+    columns=[f'PC{i+1}' for i in range(X_test_pca.shape[1])]
+)
+
+print(f"\nOriginal number of features: {stationary_df_train.shape[1]}")
+print(f"Number of components after PCA: {pca_df_train.shape[1]}\n")
+
+from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
+from pytorch_forecasting.metrics import QuantileLoss
+from lightning.pytorch.callbacks import EarlyStopping
+import lightning.pytorch as pl
+import torch
+
+pl.seed_everything(42)
+max_encoder_length = 32
+max_prediction_length = 1
+VAL_SIZE = .2
+VARIABLES_IMPORTANCE = .8
+model_data_feature_sel = initial_model_train.join(stationary_df_train)
+model_data_feature_sel = model_data_feature_sel.join(pca_df_train)
+
+model_data_feature_sel['group'] = 'spy'
+model_data_feature_sel['time_idx'] = range(len(model_data_feature_sel))
+
+train_size_vsn = int((1-VAL_SIZE)*len(model_data_feature_sel))
+train_data_feature = model_data_feature_sel[:train_size_vsn]
+val_data_feature = model_data_feature_sel[train_size_vsn:]
+unknown_reals_origin = [col for col in model_data_feature_sel.columns if col.startswith('value_')] + ['y']
+
+timeseries_config = {
+    "time_idx": "time_idx",
+    "target": "y",
+    "group_ids": ["group"],
+    "max_encoder_length": max_encoder_length,
+    "max_prediction_length": max_prediction_length,
+    "time_varying_unknown_reals": unknown_reals_origin,
+    "add_relative_time_idx": True,
+    "add_target_scales": True,
+    "add_encoder_length": True
+}
+
+training_ts = TimeSeriesDataSet(
+    train_data_feature,
+    **timeseries_config
+)
+
+if torch.cuda.is_available():
+    accelerator = 'gpu'
+    num_workers = 2
+else :
+    accelerator = 'auto'
+    num_workers = 0
+
+validation = TimeSeriesDataSet.from_dataset(training_ts, val_data_feature, predict=True, stop_randomization=True)
+train_dataloader = training_ts.to_dataloader(train=True, batch_size=64, num_workers=num_workers)
+val_dataloader = validation.to_dataloader(train=False, batch_size=64*5, num_workers=num_workers)
+
+tft = TemporalFusionTransformer.from_dataset(
+    training_ts,
+    learning_rate=0.03,
+    hidden_size=16,
+    attention_head_size=2,
+    dropout=0.1,
+    loss=QuantileLoss()
+)
+
+early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-5, patience=5, verbose=False, mode="min")
+
+trainer = pl.Trainer(max_epochs=20,  accelerator=accelerator, gradient_clip_val=.5, callbacks=[early_stop_callback])
+trainer.fit(
+    tft,
+    train_dataloaders=train_dataloader,
+    val_dataloaders=val_dataloader
+
+)
+
+best_model_path = trainer.checkpoint_callback.best_model_path
+best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
+
+raw_predictions = best_tft.predict(val_dataloader, mode="raw", return_x=True)
 
 
-from neuralforecast.models import TFT
+def get_top_encoder_variables(best_tft,interpretation):
+    encoder_importances = interpretation["encoder_variables"]
+    sorted_importances, indices = torch.sort(encoder_importances, descending=True)
+    cumulative_importances = torch.cumsum(sorted_importances, dim=0)
+    threshold_index = torch.where(cumulative_importances > VARIABLES_IMPORTANCE)[0][0]
+    top_variables = [best_tft.encoder_variables[i] for i in indices[:threshold_index+1]]
+    if 'relative_time_idx' in top_variables:
+        top_variables.remove('relative_time_idx')
+    return top_variables
+
+interpretation= best_tft.interpret_output(raw_predictions.output, reduction="sum")
+top_encoder_vars = get_top_encoder_variables(best_tft,interpretation)
+
+print(f"\nOriginal number of features: {stationary_df_train.shape[1]}")
+print(f"Number of features after Variable Selection Network (VSN): {len(top_encoder_vars)}\n")
+
+from neuralforecast.models import TiDE
 from neuralforecast import NeuralForecast
 
-TRAIN_SIZE = .90
-model_data['unique_id'] = 'SPY'
-model_data['price'] = model_data['price'].astype(float)
-model_data['y'] = model_data['price'].pct_change()
-model_data = model_data.iloc[1:]
-hist_exog_list = [col for col in model_data.columns if col.startswith('PC')]
+train_data = initial_model_train.join(stationary_df_train)
+train_data = train_data.join(pca_df_train)
+test_data = initial_model_test.join(stationary_df_test)
+test_data = test_data.join(pca_df_test)
 
-train_size = int(len(model_data) * TRAIN_SIZE)
-train_data = model_data[:train_size]
-test_data = model_data[train_size:]
+hist_exog_list_origin = [col for col in train_data.columns if col.startswith('value_')] + ['y']
+hist_exog_list_pca = [col for col in train_data.columns if col.startswith('PC')] + ['y']
+hist_exog_list_vsn = top_encoder_vars
 
-model = TFT(
-    h=1,
-    input_size=24,
-    hist_exog_list=hist_exog_list,
-    scaler_type='robust',
-    max_steps=20
 
+tide_params = {
+    "h": 1,
+    "input_size": 32,
+    "scaler_type": "robust",
+    "max_steps": 500,
+    "val_check_steps": 20,
+    "early_stop_patience_steps": 5
+}
+
+model_original = TiDE(
+    **tide_params,
+    hist_exog_list=hist_exog_list_origin,
+)
+
+
+model_pca = TiDE(
+    **tide_params,
+    hist_exog_list=hist_exog_list_pca,
+)
+
+model_vsn = TiDE(
+    **tide_params,
+    hist_exog_list=hist_exog_list_vsn,
 )
 
 nf = NeuralForecast(
-    models=[model],
+    models=[model_original, model_pca, model_vsn],
     freq='D'
 )
 
-nf.fit(df=model_data)
+val_size = int(train_size*VAL_SIZE)
+nf.fit(df=train_data,val_size=val_size,use_init_models=True)
 
-
+from tabulate import tabulate
 y_hat_test_ret = pd.DataFrame()
 current_train_data = train_data.copy()
 
@@ -286,27 +318,78 @@ for i in range(len(test_data) - 1):
     y_hat_test_ret = pd.concat([y_hat_test_ret, y_hat_ret.iloc[[-1]]])
     current_train_data = combined_data
 
-predicted_returns = y_hat_test_ret['TFT'].values
+predicted_returns_original = y_hat_test_ret['TiDE'].values
+predicted_returns_pca = y_hat_test_ret['TiDE1'].values
+predicted_returns_vsn = y_hat_test_ret['TiDE2'].values
 
-predicted_prices_ret = []
-for i, ret in enumerate(predicted_returns):
+predicted_prices_original = []
+predicted_prices_pca = []
+predicted_prices_vsn = []
+
+for i in range(len(predicted_returns_pca)):
     if i == 0:
         last_true_price = train_data['price'].iloc[-1]
     else:
         last_true_price = test_data['price'].iloc[i-1]
-    predicted_prices_ret.append(last_true_price * (1 + ret))
+    predicted_prices_original.append(last_true_price * (1 + predicted_returns_original[i]))
+    predicted_prices_pca.append(last_true_price * (1 + predicted_returns_pca[i]))
+    predicted_prices_vsn.append(last_true_price * (1 + predicted_returns_vsn[i]))
+
+true_values = test_data['price']
+methods = ['Original','PCA', 'VSN']
+predicted_prices = [predicted_prices_original,predicted_prices_pca, predicted_prices_vsn]
+
+results = []
+
+for method, prices in zip(methods, predicted_prices):
+    mse = np.mean((np.array(prices) - true_values)**2)
+    rmse = np.sqrt(mse)
+    mae = np.mean(np.abs(np.array(prices) - true_values))
+
+    results.append([method, mse, rmse, mae])
+
+headers = ["Method", "MSE", "RMSE", "MAE"]
+table = tabulate(results, headers=headers, floatfmt=".4f", tablefmt="grid")
+
+print("\nPrediction Errors Comparison:")
+print(table)
+
+with open("prediction_errors_comparison.txt", "w") as f:
+    f.write("Prediction Errors Comparison:\n")
+    f.write(table)
 
 
 import matplotlib.pyplot as plt
-true_values = test_data['price']
 
 plt.figure(figsize=(12, 6))
 plt.plot(train_data['ds'], train_data['price'], label='Training Data', color='blue')
 plt.plot(test_data['ds'], true_values, label='True Prices', color='green')
-plt.plot(test_data['ds'], predicted_prices_ret, label='Predicted Prices', color='red')
+plt.plot(test_data['ds'], predicted_prices_original, label='Predicted Prices', color='red')
 plt.legend()
-plt.title('Basic SPY Stepwise Forecast using TFT')
+plt.title('SPY Price Forecast Using All Original Feature')
 plt.xlabel('Date')
 plt.ylabel('SPY Price')
-plt.savefig('spy_forecast_chart.png', dpi=300, bbox_inches='tight')
+plt.savefig('spy_forecast_chart_original.png', dpi=300, bbox_inches='tight')
+plt.close()
+
+plt.figure(figsize=(12, 6))
+plt.plot(train_data['ds'], train_data['price'], label='Training Data', color='blue')
+plt.plot(test_data['ds'], true_values, label='True Prices', color='green')
+plt.plot(test_data['ds'], predicted_prices_pca, label='Predicted Prices', color='red')
+plt.legend()
+plt.title('SPY Price Forecast Using PCA Dimensionality Reduction')
+plt.xlabel('Date')
+plt.ylabel('SPY Price')
+plt.savefig('spy_forecast_chart_pca.png', dpi=300, bbox_inches='tight')
+plt.close()
+
+plt.figure(figsize=(12, 6))
+plt.plot(train_data['ds'], train_data['price'], label='Training Data', color='blue')
+plt.plot(test_data['ds'], true_values, label='True Prices', color='green')
+plt.plot(test_data['ds'], predicted_prices_vsn, label='Predicted Prices', color='red')
+plt.legend()
+plt.title('SPY Price Forecast Using VSN')
+plt.xlabel('Date')
+plt.ylabel('SPY Price')
+plt.savefig('spy_forecast_chart_vsn.png', dpi=300, bbox_inches='tight')
 plt.close()
