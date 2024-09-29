@@ -19,7 +19,7 @@ we continue to refine our forecasting models, another crucial question arises:
 how do we handle the multitude of features our data may present?
 
 Learn why feature reduction is important and how to implement feature reduction 
-in time series
+in time series.
 <br>
 <br>
 ## Usage
