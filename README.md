@@ -6,7 +6,7 @@
 </p><br>
 <br>
 
-# Feature Reduction for Time Series ✂️  <br>
+# ✂️ Feature Reduction for Time Series <br>
 
 
 ## Is Less More? Do Deep Learning Forecasting Models Need Feature Reduction?
