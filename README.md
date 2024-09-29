@@ -24,7 +24,7 @@ in time series
 <br>
 ## Usage
 
-It is recommended to read [this article](hhttps://towardsdatascience.com/is-less-more-do-deep-learning-forecasting-models-need-feature-reduction-25d8968ac15c) 
+It is recommended to read [this article](https://towardsdatascience.com/is-less-more-do-deep-learning-forecasting-models-need-feature-reduction-25d8968ac15c)
 for a good understanding of how to use the code and implement feature reduction 
 in your time series pipeline.
 
